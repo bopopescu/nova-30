@@ -1,6 +1,6 @@
 nova (2013.1.2-1) unstable; urgency=low
 
-  * Uploading to unstable (Closes: #710157).
+  * Uploading to unstable (Closes: #710157, #711326).
   * New upstream release.
   * Added Should-Start/stop: postgresql mysql in init scripts (Closes: #706013)
     thanks to Julien Cristau for reporting.
