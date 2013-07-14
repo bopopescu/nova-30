@@ -1,4 +1,4 @@
-nova (2013.1.2-1) unstable; urgency=low
+nova (2013.1.2-2) unstable; urgency=low
 
   * Uploading to unstable (Closes: #710157, #711326, #711541, #707600).
   * New upstream release.
