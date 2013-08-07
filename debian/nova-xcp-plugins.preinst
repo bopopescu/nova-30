@@ -1,0 +1,14 @@
+#!/bin/sh
+
+set -e
+
+XCPNET_SCR=/etc/init.d/nova-xcp-network
+if [ -e "${XCPNET_SCR}" ] ; then
+	XCPNET_SUMP=`md5sum`${XCPNET_SCR} | cut -d" " -f1`
+	if [ "${XCPNET_SUMP}" = 12722954032eb5c11ce135184b743e74 ] ; then
+		update-rc.d -f nova-xcp-network remove || true
+		rm -f /etc/init.d/nova-xcp-network
+	fi
+fi
+
+#DEBHELPER#
