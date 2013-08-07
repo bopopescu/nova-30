@@ -1,4 +1,4 @@
-nova (2013.1.2-3) UNRELEASED; urgency=low
+nova (2013.1.2-3) unstable; urgency=low
 
   [ Julien Cristau ]
   * Add logrotate configuration for nova-manage.log.
