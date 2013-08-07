@@ -8,6 +8,8 @@ nova (2013.1.2-3) UNRELEASED; urgency=low
     have upgrade working (Closes: #718965). Thanks to Andreas Beckmann for his
     bug report.
   * CVE-2013-2256: fixes ACL on public flavors (Closes: #718905).
+  * CVE-2013-4185: stops a potential DOS with source security groups by using
+    cached nwinfo for secgroup rules (Closes: #718907).
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 07 Aug 2013 11:28:26 +0200
 
