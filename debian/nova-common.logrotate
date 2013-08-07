@@ -1,0 +1,5 @@
+/var/log/nova/nova-manage.log {
+    monthly
+    notifempty
+    missingok
+}

@@ -1,3 +1,18 @@
+nova (2013.1.2-3) UNRELEASED; urgency=low
+
+  [ Julien Cristau ]
+  * Add logrotate configuration for nova-manage.log.
+
+  [ Thomas Goirand ]
+  * Added some logic to purge /etc/init.d/nova-xcp-network if it's there, and
+    have upgrade working (Closes: #718965). Thanks to Andreas Beckmann for his
+    bug report.
+  * CVE-2013-2256: fixes ACL on public flavors (Closes: #718905).
+  * CVE-2013-4185: stops a potential DOS with source security groups by using
+    cached nwinfo for secgroup rules (Closes: #718907).
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 07 Aug 2013 11:28:26 +0200
+
 nova (2013.1.2-2) unstable; urgency=low
 
   * Uploading to unstable (Closes: #710157, #711326, #711541, #707600).
