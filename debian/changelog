@@ -7,6 +7,7 @@ nova (2013.1.2-3) UNRELEASED; urgency=low
   * Added some logic to purge /etc/init.d/nova-xcp-network if it's there, and
     have upgrade working (Closes: #718965). Thanks to Andreas Beckmann for his
     bug report.
+  * CVE-2013-2256: fixes ACL on public flavors (Closes: #718905).
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 07 Aug 2013 11:28:26 +0200
 
