@@ -152,7 +152,7 @@ Description: OpenStack Compute - libraries
 
 Package: nova-common
 Architecture: all
-Pre-Depends: dpkg (>= 1.15.6~)
+Pre-Depends: dpkg (>= 1.15.6~), net-tools
 Depends: adduser,
          dbconfig-common,
          python-amqplib,

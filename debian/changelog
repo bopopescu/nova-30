@@ -10,6 +10,7 @@ nova (2013.1.2-3) UNRELEASED; urgency=low
   * CVE-2013-2256: fixes ACL on public flavors (Closes: #718905).
   * CVE-2013-4185: stops a potential DOS with source security groups by using
     cached nwinfo for secgroup rules (Closes: #718907).
+  * Added missing nova-common pre-depends: net-tools.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 07 Aug 2013 11:28:26 +0200
 
