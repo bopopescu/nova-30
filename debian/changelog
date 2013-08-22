@@ -1,3 +1,9 @@
+nova (2013.1.2-4) UNRELEASED; urgency=low
+
+  * Fixed wrong chown in upstart script (sed s/Root/root/).
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 22 Aug 2013 12:10:46 +0200
+
 nova (2013.1.2-3) unstable; urgency=low
 
   [ Julien Cristau ]
