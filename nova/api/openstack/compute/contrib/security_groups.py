@@ -19,7 +19,6 @@
 import json
 import webob
 from webob import exc
-from xml.dom import minidom
 
 from nova.api.openstack import common
 from nova.api.openstack import extensions
@@ -31,6 +30,7 @@ from nova import exception
 from nova.network.security_group import openstack_driver
 from nova.network.security_group import quantum_driver
 from nova.openstack.common import log as logging
+from nova.openstack.common import xmlutils
 from nova.virt import netutils
 
 
@@ -330,7 +330,7 @@ class SecurityGroupRulesController(SecurityGroupControllerBase):
 
         if 'cidr' in new_rule:
             net, prefixlen = netutils.get_net_and_prefixlen(new_rule['cidr'])
-            if net != '0.0.0.0' and prefixlen == '0':
+            if net not in ('0.0.0.0', '::') and prefixlen == '0':
                 msg = _("Bad prefix for network in cidr %s") % new_rule['cidr']
                 raise exc.HTTPBadRequest(explanation=msg)
 
@@ -500,7 +500,7 @@ class SecurityGroupsOutputController(wsgi.Controller):
                     servers[0][key] = req_obj['server'].get(
                         key, [{'name': 'default'}])
                 except ValueError:
-                    root = minidom.parseString(req.body)
+                    root = xmlutils.safe_minidom_parse_string(req.body)
                     sg_root = root.getElementsByTagName(key)
                     groups = []
                     if sg_root:

@@ -542,7 +542,7 @@ class LibvirtConnTestCase(test.TestCase):
 
         self.assertEquals(type(cfg.devices[2]),
                           vconfig.LibvirtConfigGuestDisk)
-        self.assertEquals(cfg.devices[2].target_dev, 'vdz')
+        self.assertEquals(cfg.devices[2].target_dev, 'hdd')
 
     def test_get_guest_config_with_vnc(self):
         self.flags(libvirt_type='kvm',
@@ -2190,9 +2190,9 @@ class LibvirtConnTestCase(test.TestCase):
         conn._check_shared_storage_test_file("file").AndReturn(False)
 
         self.mox.StubOutWithMock(conn, "_assert_dest_node_has_enough_disk")
-        conn._assert_dest_node_has_enough_disk(self.context, instance_ref,
-                                        dest_check_data['disk_available_mb'],
-                                               False)
+        conn._assert_dest_node_has_enough_disk(
+            self.context, instance_ref, dest_check_data['disk_available_mb'],
+            False)
 
         self.mox.ReplayAll()
         conn.check_can_live_migrate_source(self.context, instance_ref,
@@ -2393,13 +2393,14 @@ class LibvirtConnTestCase(test.TestCase):
             self.mox.ReplayAll()
             migrate_data = {'is_shared_storage': False,
                             'is_volume_backed': True,
-                            'block_migration': False
+                            'block_migration': False,
+                            'instance_relative_path': inst_ref['name']
                             }
             ret = conn.pre_live_migration(c, inst_ref, vol, nw_info,
                                           migrate_data)
             self.assertEqual(ret, None)
             self.assertTrue(os.path.exists('%s/%s/' % (tmpdir,
-                                                       inst_ref['uuid'])))
+                                                       inst_ref['name'])))
         db.instance_destroy(self.context, inst_ref['uuid'])
 
     def test_pre_block_migration_works_correctly(self):
@@ -2488,6 +2489,80 @@ class LibvirtConnTestCase(test.TestCase):
         self.mox.ReplayAll()
         conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
         info = conn.get_instance_disk_info(instance_ref['name'])
+        info = jsonutils.loads(info)
+        self.assertEquals(info[0]['type'], 'raw')
+        self.assertEquals(info[0]['path'], '/test/disk')
+        self.assertEquals(info[0]['disk_size'], 10737418240)
+        self.assertEquals(info[0]['backing_file'], "")
+        self.assertEquals(info[0]['over_committed_disk_size'], 0)
+        self.assertEquals(info[1]['type'], 'qcow2')
+        self.assertEquals(info[1]['path'], '/test/disk.local')
+        self.assertEquals(info[1]['virt_disk_size'], 21474836480)
+        self.assertEquals(info[1]['backing_file'], "file")
+        self.assertEquals(info[1]['over_committed_disk_size'], 18146236825)
+
+        db.instance_destroy(self.context, instance_ref['uuid'])
+
+    def test_get_instance_disk_info_excludes_volumes(self):
+        # Test data
+        instance_ref = db.instance_create(self.context, self.test_instance)
+        dummyxml = ("<domain type='kvm'><name>instance-0000000a</name>"
+                    "<devices>"
+                    "<disk type='file'><driver name='qemu' type='raw'/>"
+                    "<source file='/test/disk'/>"
+                    "<target dev='vda' bus='virtio'/></disk>"
+                    "<disk type='file'><driver name='qemu' type='qcow2'/>"
+                    "<source file='/test/disk.local'/>"
+                    "<target dev='vdb' bus='virtio'/></disk>"
+                    "<disk type='file'><driver name='qemu' type='qcow2'/>"
+                    "<source file='/fake/path/to/volume1'/>"
+                    "<target dev='vdc' bus='virtio'/></disk>"
+                    "<disk type='file'><driver name='qemu' type='qcow2'/>"
+                    "<source file='/fake/path/to/volume2'/>"
+                    "<target dev='vdd' bus='virtio'/></disk>"
+                    "</devices></domain>")
+
+        # Preparing mocks
+        vdmock = self.mox.CreateMock(libvirt.virDomain)
+        self.mox.StubOutWithMock(vdmock, "XMLDesc")
+        vdmock.XMLDesc(0).AndReturn(dummyxml)
+
+        def fake_lookup(instance_name):
+            if instance_name == instance_ref['name']:
+                return vdmock
+        self.create_fake_libvirt_mock(lookupByName=fake_lookup)
+
+        GB = 1024 * 1024 * 1024
+        fake_libvirt_utils.disk_sizes['/test/disk'] = 10 * GB
+        fake_libvirt_utils.disk_sizes['/test/disk.local'] = 20 * GB
+        fake_libvirt_utils.disk_backing_files['/test/disk.local'] = 'file'
+
+        self.mox.StubOutWithMock(os.path, "getsize")
+        os.path.getsize('/test/disk').AndReturn((10737418240))
+        os.path.getsize('/test/disk.local').AndReturn((3328599655))
+
+        ret = ("image: /test/disk\n"
+               "file format: raw\n"
+               "virtual size: 20G (21474836480 bytes)\n"
+               "disk size: 3.1G\n"
+               "cluster_size: 2097152\n"
+               "backing file: /test/dummy (actual path: /backing/file)\n")
+
+        self.mox.StubOutWithMock(os.path, "exists")
+        os.path.exists('/test/disk.local').AndReturn(True)
+
+        self.mox.StubOutWithMock(utils, "execute")
+        utils.execute('env', 'LC_ALL=C', 'LANG=C', 'qemu-img', 'info',
+                      '/test/disk.local').AndReturn((ret, ''))
+
+        self.mox.ReplayAll()
+        conn_info = {'driver_volume_type': 'fake'}
+        info = {'block_device_mapping': [
+                  {'connection_info': conn_info, 'mount_device': '/dev/vdc'},
+                  {'connection_info': conn_info, 'mount_device': '/dev/vdd'}]}
+        conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        info = conn.get_instance_disk_info(instance_ref['name'],
+                                           block_device_info=info)
         info = jsonutils.loads(info)
         self.assertEquals(info[0]['type'], 'raw')
         self.assertEquals(info[0]['path'], '/test/disk')
@@ -3070,6 +3145,27 @@ class LibvirtConnTestCase(test.TestCase):
         instance = {"name": "instancename", "id": "instanceid",
                     "uuid": "875a8070-d0b9-4949-8b31-104d125c9a64"}
         conn.destroy(instance, [])
+
+    def test_destroy_timed_out(self):
+        mock = self.mox.CreateMock(libvirt.virDomain)
+        mock.ID()
+        mock.destroy().AndRaise(libvirt.libvirtError("timed out"))
+        self.mox.ReplayAll()
+
+        def fake_lookup_by_name(instance_name):
+            return mock
+
+        def fake_get_error_code(self):
+            return libvirt.VIR_ERR_OPERATION_TIMEOUT
+
+        conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        self.stubs.Set(conn, '_lookup_by_name', fake_lookup_by_name)
+        self.stubs.Set(libvirt.libvirtError, 'get_error_code',
+                fake_get_error_code)
+        instance = {"name": "instancename", "id": "instanceid",
+                    "uuid": "875a8070-d0b9-4949-8b31-104d125c9a64"}
+        self.assertRaises(exception.InstancePowerOffFailure,
+                conn.destroy, instance, [])
 
     def test_private_destroy_not_found(self):
         mock = self.mox.CreateMock(libvirt.virDomain)
@@ -3715,6 +3811,38 @@ class LibvirtConnTestCase(test.TestCase):
         conn.set_cache_mode(fake_conf)
         self.assertEqual(fake_conf.driver_cache, 'fake')
 
+    def _test_shared_storage_detection(self, is_same):
+        conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), True)
+        self.mox.StubOutWithMock(conn, 'get_host_ip_addr')
+        self.mox.StubOutWithMock(utils, 'execute')
+        self.mox.StubOutWithMock(os.path, 'exists')
+        self.mox.StubOutWithMock(os, 'unlink')
+        conn.get_host_ip_addr().AndReturn('bar')
+        utils.execute('ssh', 'foo', 'touch', mox.IgnoreArg())
+        os.path.exists(mox.IgnoreArg()).AndReturn(is_same)
+        if is_same:
+            os.unlink(mox.IgnoreArg())
+        else:
+            utils.execute('ssh', 'foo', 'rm', mox.IgnoreArg())
+        self.mox.ReplayAll()
+        return conn._is_storage_shared_with('foo', '/path')
+
+    def test_shared_storage_detection_same_host(self):
+        self.assertTrue(self._test_shared_storage_detection(True))
+
+    def test_shared_storage_detection_different_host(self):
+        self.assertFalse(self._test_shared_storage_detection(False))
+
+    def test_shared_storage_detection_easy(self):
+        conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), True)
+        self.mox.StubOutWithMock(conn, 'get_host_ip_addr')
+        self.mox.StubOutWithMock(utils, 'execute')
+        self.mox.StubOutWithMock(os.path, 'exists')
+        self.mox.StubOutWithMock(os, 'unlink')
+        conn.get_host_ip_addr().AndReturn('foo')
+        self.mox.ReplayAll()
+        self.assertTrue(conn._is_storage_shared_with('foo', '/path'))
+
 
 class HostStateTestCase(test.TestCase):
 
@@ -3963,7 +4091,9 @@ class IptablesFirewallTestCase(test.TestCase):
         from nova.network import linux_net
         linux_net.iptables_manager.execute = fake_iptables_execute
 
-        _fake_stub_out_get_nw_info(self.stubs, lambda *a, **kw: network_model)
+        from nova.compute import utils as compute_utils
+        self.stubs.Set(compute_utils, 'get_nw_info_for_instance',
+                       lambda instance: network_model)
 
         network_info = network_model.legacy()
         self.fw.prepare_instance_filter(instance_ref, network_info)
@@ -4408,6 +4538,17 @@ class LibvirtUtilsTestCase(test.TestCase):
         result = libvirt_utils.get_iscsi_initiator()
         self.assertEqual(initiator, result)
 
+    def test_get_missing_iscsi_initiator(self):
+        self.mox.StubOutWithMock(utils, 'execute')
+        file_path = '/etc/iscsi/initiatorname.iscsi'
+        utils.execute('cat', file_path, run_as_root=True).AndRaise(
+            exception.FileNotFound(file_path=file_path)
+        )
+        # Start test
+        self.mox.ReplayAll()
+        result = libvirt_utils.get_iscsi_initiator()
+        self.assertIsNone(result)
+
     def test_create_image(self):
         self.mox.StubOutWithMock(utils, 'execute')
         utils.execute('qemu-img', 'create', '-f', 'raw',
@@ -4734,8 +4875,10 @@ class LibvirtDriverTestCase(test.TestCase):
         .migrate_disk_and_power_off. """
 
         self.counter = 0
+        self.checked_shared_storage = False
 
-        def fake_get_instance_disk_info(instance, xml=None):
+        def fake_get_instance_disk_info(instance, xml=None,
+                                        block_device_info=None):
             return '[]'
 
         def fake_destroy(instance):
@@ -4752,11 +4895,17 @@ class LibvirtDriverTestCase(test.TestCase):
         def fake_os_path_exists(path):
             return True
 
+        def fake_is_storage_shared(dest, inst_base):
+            self.checked_shared_storage = True
+            return False
+
         self.stubs.Set(self.libvirtconnection, 'get_instance_disk_info',
                        fake_get_instance_disk_info)
         self.stubs.Set(self.libvirtconnection, '_destroy', fake_destroy)
         self.stubs.Set(self.libvirtconnection, 'get_host_ip_addr',
                        fake_get_host_ip_addr)
+        self.stubs.Set(self.libvirtconnection, '_is_storage_shared_with',
+                       fake_is_storage_shared)
         self.stubs.Set(utils, 'execute', fake_execute)
         self.stubs.Set(os.path, 'exists', fake_os_path_exists)
 
@@ -4780,7 +4929,8 @@ class LibvirtDriverTestCase(test.TestCase):
                       'disk_size': '83886080'}]
         disk_info_text = jsonutils.dumps(disk_info)
 
-        def fake_get_instance_disk_info(instance, xml=None):
+        def fake_get_instance_disk_info(instance, xml=None,
+                                        block_device_info=None):
             return disk_info_text
 
         def fake_destroy(instance):

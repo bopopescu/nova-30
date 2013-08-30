@@ -483,7 +483,23 @@ class ComputeManager(manager.SchedulerDependentManager):
                 legacy_net_info[0][1].get('vif_type') is None):
             # Call to network API to get instance info, this will
             # force an update to the instance's info_cache
-            net_info = self._get_instance_nw_info(context, instance)
+            retry_time = 0
+            # Continue retrying until _get_instance_nw_info() succeeds.
+            while True:
+                try:
+                    net_info = self._get_instance_nw_info(context, instance)
+                    break
+                except Exception:
+                    # Retry in an exponential backoff fashion
+                    # capped at 60 seconds.
+                    if retry_time < 60:
+                        retry_time += 6
+                    LOG.exception(_("Error raised getting network info for "
+                                    "instance %(instance_uuid)s. Retrying "
+                                    "in %(retry_time)s seconds."),
+                                    {'instance_uuid': instance['uuid'],
+                                     'retry_time': retry_time})
+                    time.sleep(retry_time)
             legacy_net_info = self._legacy_nw_info(net_info)
         self.driver.plug_vifs(instance, legacy_net_info)
 
@@ -1223,6 +1239,16 @@ class ComputeManager(manager.SchedulerDependentManager):
                     admin_password, is_first_time, node, instance)
         do_run_instance()
 
+    def _try_deallocate_network(self, context, instance):
+        try:
+            # tear down allocated network structure
+            self._deallocate_network(context, instance)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.error(_('Failed to deallocate network for instance.'),
+                          instance=instance)
+                self._set_instance_error_state(context, instance['uuid'])
+
     def _shutdown_instance(self, context, instance, bdms):
         """Shutdown an instance on this host."""
         context = context.elevated()
@@ -1237,21 +1263,28 @@ class ComputeManager(manager.SchedulerDependentManager):
         except exception.NetworkNotFound:
             network_info = network_model.NetworkInfo()
 
-        try:
-            # tear down allocated network structure
-            self._deallocate_network(context, instance)
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                LOG.error(_('Failed to deallocate network for instance.'),
-                          instance=instance)
-                self._set_instance_error_state(context, instance['uuid'])
-
         # NOTE(vish) get bdms before destroying the instance
         vol_bdms = self._get_volume_bdms(bdms)
         block_device_info = self._get_instance_volume_block_device_info(
             context, instance, bdms=bdms)
-        self.driver.destroy(instance, self._legacy_nw_info(network_info),
-                            block_device_info)
+
+        # NOTE(melwitt): attempt driver destroy before releasing ip, may
+        #                want to keep ip allocated for certain failures
+        try:
+            self.driver.destroy(instance, self._legacy_nw_info(network_info),
+                                block_device_info)
+        except exception.InstancePowerOffFailure:
+            # if the instance can't power off, don't release the ip
+            with excutils.save_and_reraise_exception():
+                pass
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                # deallocate ip and fail without proceeding to
+                # volume api calls, preserving current behavior
+                self._try_deallocate_network(context, instance)
+
+        self._try_deallocate_network(context, instance)
+
         for bdm in vol_bdms:
             try:
                 # NOTE(vish): actual driver detach done in driver.destroy, so
@@ -1412,7 +1445,14 @@ class ComputeManager(manager.SchedulerDependentManager):
     def start_instance(self, context, instance):
         """Starting an instance on this host."""
         self._notify_about_instance_usage(context, instance, "power_on.start")
-        self.driver.power_on(instance)
+
+        network_info = self._get_instance_nw_info(context, instance)
+        block_device_info = self._get_instance_volume_block_device_info(
+                                context, instance)
+        self.driver.power_on(context, instance,
+                             self._legacy_nw_info(network_info),
+                             block_device_info)
+
         current_power_state = self._get_power_state(context, instance)
         instance = self._instance_update(context, instance['uuid'],
                 power_state=current_power_state,
@@ -1468,7 +1508,12 @@ class ComputeManager(manager.SchedulerDependentManager):
         except NotImplementedError:
             # Fallback to just powering on the instance if the hypervisor
             # doesn't implement the restore method
-            self.driver.power_on(instance)
+            network_info = self._get_instance_nw_info(context, instance)
+            block_device_info = self._get_instance_volume_block_device_info(
+                                context, instance)
+            self.driver.power_on(context, instance,
+                                 self._legacy_nw_info(network_info),
+                                 block_device_info)
         current_power_state = self._get_power_state(context, instance)
         instance = self._instance_update(context, instance['uuid'],
                 power_state=current_power_state,
@@ -1550,8 +1595,20 @@ class ComputeManager(manager.SchedulerDependentManager):
                     LOG.info(_("disk not on shared storagerebuilding from:"
                                " '%s'") % str(image_ref))
 
-                instance = self._instance_update(
-                        context, instance['uuid'], host=self.host)
+                # NOTE(mriedem): On a recreate (evacuate), we need to update
+                # the instance's host and node properties to reflect it's
+                # destination node for the recreate.
+                node_name = None
+                try:
+                    compute_node = self._get_compute_info(context, self.host)
+                    node_name = compute_node['hypervisor_hostname']
+                except exception.NotFound:
+                    LOG.exception(_('Failed to get compute_info for %s') %
+                                  self.host)
+                finally:
+                    instance = self._instance_update(
+                            context, instance['uuid'], host=self.host,
+                            node=node_name)
 
             if image_ref:
                 image_meta = _get_image_meta(context, image_ref)
@@ -2067,7 +2124,8 @@ class ComputeManager(manager.SchedulerDependentManager):
             instance = self._instance_update(context, instance['uuid'],
                                              vm_state=vm_states.ACTIVE,
                                              task_state=None,
-                                             expected_task_state=None)
+                                             expected_task_state=[None,
+                                             task_states.DELETING])
 
             self._notify_about_instance_usage(
                 context, instance, "resize.confirm.end",
@@ -3862,7 +3920,8 @@ class ComputeManager(manager.SchedulerDependentManager):
             old_enough = (not instance['deleted_at'] or
                           timeutils.is_older_than(instance['deleted_at'],
                                                   interval))
-            soft_deleted = instance['vm_state'] == vm_states.SOFT_DELETED
+            soft_deleted = (instance['vm_state'] == vm_states.SOFT_DELETED and
+                            instance['task_state'] == None)
 
             if soft_deleted and old_enough:
                 capi = self.conductor_api

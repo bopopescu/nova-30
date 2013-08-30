@@ -1355,11 +1355,12 @@ class CommonNetworkTestCase(test.TestCase):
         manager.db.network_get_all(ctxt).AndReturn([{'id': 1,
                                      'cidr': '192.168.2.9/25'}])
         self.mox.ReplayAll()
-        # ValueError: requested cidr (192.168.2.0/24) conflicts with
-        #             existing smaller cidr
+        # CidrConflict: requested cidr (192.168.2.0/24) conflicts with
+        #               existing smaller cidr
         args = (None, 'fake', '192.168.2.0/24', False, 1, 256, None, None,
                 None, None, None)
-        self.assertRaises(ValueError, manager.create_networks, *args)
+        self.assertRaises(exception.CidrConflict,
+                          manager.create_networks, *args)
 
     def test_validate_cidrs_split_smaller_cidr_in_use(self):
         manager = fake_network.FakeNetworkManager()
@@ -1407,10 +1408,11 @@ class CommonNetworkTestCase(test.TestCase):
         self.mox.ReplayAll()
         args = (None, 'fake', '192.168.2.0/24', False, 3, 64, None, None,
                 None, None, None)
-        # ValueError: Not enough subnets avail to satisfy requested num_
-        #             networks - some subnets in requested range already
-        #             in use
-        self.assertRaises(ValueError, manager.create_networks, *args)
+        # CidrConflict: Not enough subnets avail to satisfy requested num_
+        #               networks - some subnets in requested range already
+        #               in use
+        self.assertRaises(exception.CidrConflict,
+                          manager.create_networks, *args)
 
     def test_validate_cidrs_one_in_use(self):
         manager = fake_network.FakeNetworkManager()
@@ -1426,10 +1428,11 @@ class CommonNetworkTestCase(test.TestCase):
         manager.db.network_get_all(ctxt).AndReturn([{'id': 1,
                                      'cidr': '192.168.0.0/24'}])
         self.mox.ReplayAll()
-        # ValueError: cidr already in use
+        # CidrConflict: cidr already in use
         args = (None, 'fake', '192.168.0.0/24', False, 1, 256, None, None,
                 None, None, None)
-        self.assertRaises(ValueError, manager.create_networks, *args)
+        self.assertRaises(exception.CidrConflict,
+                          manager.create_networks, *args)
 
     def test_validate_cidrs_too_many(self):
         manager = fake_network.FakeNetworkManager()
@@ -1457,9 +1460,10 @@ class CommonNetworkTestCase(test.TestCase):
         self.mox.ReplayAll()
         args = (None, 'fake', '192.168.0.0/24', False, 1, 256, None, None,
                 None, None, None)
-        # ValueError: requested cidr (192.168.0.0/24) conflicts
-        #             with existing supernet
-        self.assertRaises(ValueError, manager.create_networks, *args)
+        # CidrConflict: requested cidr (192.168.0.0/24) conflicts
+        #               with existing supernet
+        self.assertRaises(exception.CidrConflict,
+                          manager.create_networks, *args)
 
     def test_create_networks(self):
         cidr = '192.168.0.0/24'
@@ -1479,7 +1483,8 @@ class CommonNetworkTestCase(test.TestCase):
         self.mox.ReplayAll()
         args = [None, 'foo', '192.168.0.0/24', None, 1, 256,
                  'fd00::/48', None, None, None, None, None]
-        self.assertRaises(ValueError, manager.create_networks, *args)
+        self.assertRaises(exception.CidrConflict,
+                          manager.create_networks, *args)
 
     def test_create_networks_many(self):
         cidr = '192.168.0.0/16'
@@ -1700,7 +1705,8 @@ class CommonNetworkTestCase(test.TestCase):
                                        table_name='nat')
 
         # The expected rules that should be configured based on the fixed_range
-        expected_lines = ['[0:0] -A %s-snat -s %s -j SNAT --to-source %s -o %s'
+        expected_lines = ['[0:0] -A %s-snat -s %s -d 0.0.0.0/0 '
+                          '-j SNAT --to-source %s -o %s'
                           % (binary_name, CONF.fixed_range,
                                           CONF.routing_source_ip,
                                           CONF.public_interface),
@@ -1748,7 +1754,8 @@ class CommonNetworkTestCase(test.TestCase):
                                        table_name='nat')
 
         # The expected rules that should be configured based on the fixed_range
-        expected_lines = ['[0:0] -A %s-snat -s %s -j SNAT --to-source %s -o %s'
+        expected_lines = ['[0:0] -A %s-snat -s %s -d 0.0.0.0/0 '
+                          '-j SNAT --to-source %s -o %s'
                           % (binary_name, networks[0]['cidr'],
                                           CONF.routing_source_ip,
                                           CONF.public_interface),
@@ -1762,7 +1769,8 @@ class CommonNetworkTestCase(test.TestCase):
                           '--ctstate DNAT -j ACCEPT' % (binary_name,
                                                         networks[0]['cidr'],
                                                         networks[0]['cidr']),
-                          '[0:0] -A %s-snat -s %s -j SNAT --to-source %s -o %s'
+                          '[0:0] -A %s-snat -s %s -d 0.0.0.0/0 '
+                          '-j SNAT --to-source %s -o %s'
                           % (binary_name, networks[1]['cidr'],
                                           CONF.routing_source_ip,
                                           CONF.public_interface),
@@ -1816,10 +1824,11 @@ class CommonNetworkTestCase(test.TestCase):
                                        table_name='nat')
 
         # Add the new expected rules to the old ones
-        expected_lines += ['[0:0] -A %s-snat -s %s -j SNAT --to-source %s -o '
-                           '%s' % (binary_name, new_network['cidr'],
-                                                CONF.routing_source_ip,
-                                                CONF.public_interface),
+        expected_lines += ['[0:0] -A %s-snat -s %s -d 0.0.0.0/0 '
+                           '-j SNAT --to-source %s -o %s'
+                           % (binary_name, new_network['cidr'],
+                                           CONF.routing_source_ip,
+                                           CONF.public_interface),
                            '[0:0] -A %s-POSTROUTING -s %s -d %s/32 -j ACCEPT'
                            % (binary_name, new_network['cidr'],
                                            CONF.metadata_host),

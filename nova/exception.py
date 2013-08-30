@@ -953,6 +953,10 @@ class MigrationError(NovaException):
     message = _("Migration error") + ": %(reason)s"
 
 
+class MigrationPreCheckError(MigrationError):
+    message = _("Migration pre-check error") + ": %(reason)s"
+
+
 class MalformedRequestBody(NovaException):
     message = _("Malformed message body: %(reason)s")
 
@@ -1081,6 +1085,11 @@ class InstancePasswordSetFailed(NovaException):
 
 class DuplicateVlan(Duplicate):
     message = _("Detected existing vlan with id %(vlan)d")
+
+
+class CidrConflict(NovaException):
+    message = _("There was a conflict when trying to complete your request.")
+    code = 409
 
 
 class InstanceNotFound(NotFound):

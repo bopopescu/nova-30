@@ -331,6 +331,59 @@ class ComputeVolumeTestCase(BaseTestCase):
                                                  block_device_mapping)
         self.assertEqual(self.cinfo.get('serial'), self.volume_id)
 
+    def test_validate_bdm(self):
+        # Test if volume is checked for availability before being attached
+        # at boot time
+
+        def fake_bdms(context, instance_uuid):
+            block_device_mapping = [{
+                'id': 1,
+                'no_device': None,
+                'virtual_name': None,
+                'snapshot_id': None,
+                'volume_id': self.volume_id,
+                'device_name': 'vda',
+                'delete_on_termination': False,
+            }]
+            return block_device_mapping
+        self.stubs.Set(self.compute.db,
+                       'block_device_mapping_get_all_by_instance',
+                       fake_bdms)
+
+        # Check that the volume status is 'available' and reject if not
+        def fake_volume_get_1(self, context, volume_id):
+            return {'id': volume_id,
+                    'status': 'creating',
+                    'attach_status': 'detached'}
+        self.stubs.Set(cinder.API, 'get', fake_volume_get_1)
+
+        self.assertRaises(exception.InvalidBDMVolume,
+                          self.compute_api._validate_bdm,
+                          self.context,
+                          instance=self.instance)
+
+        # Check that the volume attach_status is 'detached' and reject if not
+        def fake_volume_get_2(self, context, volume_id):
+            return {'id': volume_id,
+                    'status': 'available',
+                    'attach_status': 'attached'}
+        self.stubs.Set(cinder.API, 'get', fake_volume_get_2)
+
+        self.assertRaises(exception.InvalidBDMVolume,
+                          self.compute_api._validate_bdm,
+                          self.context,
+                          instance=self.instance)
+
+        # Check that the volume status is 'available' and attach_status is
+        # 'detached' and accept the request if so
+        def fake_volume_get_3(self, context, volume_id):
+            return {'id': volume_id,
+                    'status': 'available',
+                    'attach_status': 'detached'}
+        self.stubs.Set(cinder.API, 'get', fake_volume_get_3)
+
+        self.compute_api._validate_bdm(self.context, instance=self.instance)
+
 
 class ComputeTestCase(BaseTestCase):
     def test_wrap_instance_fault(self):
@@ -1063,7 +1116,8 @@ class ComputeTestCase(BaseTestCase):
 
         called = {'power_on': False}
 
-        def fake_driver_power_on(self, instance):
+        def fake_driver_power_on(self, context, instance, network_info,
+                                 block_device_info):
             called['power_on'] = True
 
         self.stubs.Set(nova.virt.fake.FakeDriver, 'power_on',
@@ -1980,6 +2034,36 @@ class ComputeTestCase(BaseTestCase):
         self.compute._delete_instance(self.context,
                 instance=jsonutils.to_primitive(instance),
                 bdms={})
+
+    def test_delete_instance_keeps_net_on_power_off_fail(self):
+        self.mox.StubOutWithMock(self.compute.driver, 'destroy')
+        self.mox.StubOutWithMock(self.compute, '_deallocate_network')
+        exp = exception.InstancePowerOffFailure(reason='')
+        self.compute.driver.destroy(mox.IgnoreArg(), mox.IgnoreArg(),
+                                    mox.IgnoreArg()).AndRaise(exp)
+        # mox will detect if _deallocate_network gets called unexpectedly
+        self.mox.ReplayAll()
+        instance = self._create_fake_instance()
+        self.assertRaises(exception.InstancePowerOffFailure,
+                          self.compute._delete_instance,
+                          self.context,
+                          instance=jsonutils.to_primitive(instance),
+                          bdms={})
+
+    def test_delete_instance_loses_net_on_other_fail(self):
+        self.mox.StubOutWithMock(self.compute.driver, 'destroy')
+        self.mox.StubOutWithMock(self.compute, '_deallocate_network')
+        exp = test.TestingException()
+        self.compute.driver.destroy(mox.IgnoreArg(), mox.IgnoreArg(),
+                                    mox.IgnoreArg()).AndRaise(exp)
+        self.compute._deallocate_network(mox.IgnoreArg(), mox.IgnoreArg())
+        self.mox.ReplayAll()
+        instance = self._create_fake_instance()
+        self.assertRaises(test.TestingException,
+                          self.compute._delete_instance,
+                          self.context,
+                          instance=jsonutils.to_primitive(instance),
+                          bdms={})
 
     def test_delete_instance_deletes_console_auth_tokens(self):
         instance = self._create_fake_instance()
@@ -4220,6 +4304,45 @@ class ComputeTestCase(BaseTestCase):
         updated_ats = (updated_at_1, updated_at_2, updated_at_3)
         self.assertEqual(len(updated_ats), len(set(updated_ats)))
 
+    def test_reclaim_queued_deletes(self):
+        self.flags(reclaim_instance_interval=3600)
+        ctxt = context.get_admin_context()
+
+        # Active
+        self._create_fake_instance(params={'host': CONF.host})
+
+        # Deleted not old enough
+        self._create_fake_instance(params={'host': CONF.host,
+                                           'vm_state': vm_states.SOFT_DELETED,
+                                           'deleted_at': timeutils.utcnow()})
+
+        # Deleted old enough (only this one should be reclaimed)
+        deleted_at = (timeutils.utcnow() -
+                      datetime.timedelta(hours=1, minutes=5))
+        instance = self._create_fake_instance(
+                params={'host': CONF.host,
+                        'vm_state': vm_states.SOFT_DELETED,
+                        'deleted_at': deleted_at})
+
+        # Restoring
+        # NOTE(hanlind): This specifically tests for a race condition
+        # where restoring a previously soft deleted instance sets
+        # deleted_at back to None, causing reclaim to think it can be
+        # deleted, see LP #1186243.
+        self._create_fake_instance(
+                params={'host': CONF.host,
+                        'vm_state': vm_states.SOFT_DELETED,
+                        'task_state': task_states.RESTORING})
+
+        self.mox.StubOutWithMock(self.compute, '_delete_instance')
+        instance_ref = jsonutils.to_primitive(db.instance_get_by_uuid(
+                                          ctxt, instance['uuid']))
+        self.compute._delete_instance(ctxt, instance_ref, [])
+
+        self.mox.ReplayAll()
+
+        self.compute._reclaim_queued_deletes(ctxt)
+
 
 class ComputeAPITestCase(BaseTestCase):
 
@@ -5471,6 +5594,43 @@ class ComputeAPITestCase(BaseTestCase):
         self.compute_api.confirm_resize(self.context, instance)
         self.compute.terminate_instance(self.context,
             instance=jsonutils.to_primitive(instance))
+
+    def test_allow_confirm_resize_on_instance_in_deleting_task_state(self):
+        instance = self._create_fake_instance()
+        old_type = instance_types.extract_instance_type(instance)
+        new_type = instance_types.get_instance_type_by_flavor_id('4')
+        sys_meta = utils.metadata_to_dict(instance['system_metadata'])
+        sys_meta = instance_types.save_instance_type_info(sys_meta,
+                                                          old_type, 'old_')
+        sys_meta = instance_types.save_instance_type_info(sys_meta,
+                                                          new_type, 'new_')
+        sys_meta = instance_types.save_instance_type_info(sys_meta,
+                                                          new_type)
+
+        fake_rt = self.mox.CreateMockAnything()
+
+        def fake_confirm_resize(*args, **kwargs):
+            pass
+
+        def fake_get_resource_tracker(self):
+            return fake_rt
+
+        self.stubs.Set(fake_rt, 'confirm_resize', fake_confirm_resize)
+        self.stubs.Set(self.compute, '_get_resource_tracker',
+                               fake_get_resource_tracker)
+
+        migration = db.migration_create(self.context.elevated(),
+                                        {'instance_uuid': instance['uuid'],
+                                         'status': 'finished'})
+        instance = db.instance_update(self.context, instance['uuid'],
+                                      {'task_state': task_states.DELETING,
+                                       'vm_state': vm_states.RESIZED,
+                                       'system_metadata': sys_meta})
+
+        self.compute.confirm_resize(self.context, instance,
+                                    migration=migration)
+        instance = db.instance_get_by_uuid(self.context, instance['uuid'])
+        self.assertEqual(vm_states.ACTIVE, instance['vm_state'])
 
     def test_resize_revert_through_api(self):
         instance = jsonutils.to_primitive(self._create_fake_instance())
@@ -7986,7 +8146,8 @@ class EvacuateHostTestCase(BaseTestCase):
     def setUp(self):
         super(EvacuateHostTestCase, self).setUp()
         self.inst_ref = jsonutils.to_primitive(self._create_fake_instance
-                                          ({'host': 'fake_host_2'}))
+                                          ({'host': 'fake_host_2',
+                                            'node': 'fakenode2'}))
         db.instance_update(self.context, self.inst_ref['uuid'],
                            {"task_state": task_states.REBUILDING})
 
@@ -8004,8 +8165,16 @@ class EvacuateHostTestCase(BaseTestCase):
                 on_shared_storage=on_shared_storage)
 
     def test_rebuild_on_host_updated_target(self):
-        """Confirm evacuate scenario updates host."""
+        """Confirm evacuate scenario updates host and node."""
         self.stubs.Set(self.compute.driver, 'instance_on_disk', lambda x: True)
+
+        def fake_get_compute_info(context, host):
+            self.assertTrue(context.is_admin)
+            self.assertEquals('fake-mini', host)
+            return {'hypervisor_hostname': self.rt.nodename}
+
+        self.stubs.Set(self.compute, '_get_compute_info',
+                       fake_get_compute_info)
         self.mox.ReplayAll()
 
         self._rebuild()
@@ -8013,6 +8182,25 @@ class EvacuateHostTestCase(BaseTestCase):
         # Should be on destination host
         instance = db.instance_get(self.context, self.inst_ref['id'])
         self.assertEqual(instance['host'], self.compute.host)
+        self.assertEqual(NODENAME, instance['node'])
+
+    def test_rebuild_on_host_updated_target_node_not_found(self):
+        """Confirm evacuate scenario where compute_node isn't found."""
+        self.stubs.Set(self.compute.driver, 'instance_on_disk', lambda x: True)
+
+        def fake_get_compute_info(context, host):
+            raise exception.NotFound(_("Host %s not found") % host)
+
+        self.stubs.Set(self.compute, '_get_compute_info',
+                       fake_get_compute_info)
+        self.mox.ReplayAll()
+
+        self._rebuild()
+
+        # Should be on destination host
+        instance = db.instance_get(self.context, self.inst_ref['id'])
+        self.assertEqual(instance['host'], self.compute.host)
+        self.assertIsNone(instance['node'])
 
     def test_rebuild_with_instance_in_stopped_state(self):
         """Confirm evacuate scenario updates vm_state to stopped

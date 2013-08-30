@@ -775,11 +775,16 @@ class API(base.Base):
         for bdm in self.db.block_device_mapping_get_all_by_instance(
                 context, instance['uuid']):
             # NOTE(vish): For now, just make sure the volumes are accessible.
+            # Additionally, check that the volume can be attached to this
+            # instance.
             snapshot_id = bdm.get('snapshot_id')
             volume_id = bdm.get('volume_id')
             if volume_id is not None:
                 try:
-                    self.volume_api.get(context, volume_id)
+                    volume = self.volume_api.get(context, volume_id)
+                    self.volume_api.check_attach(context,
+                                                 volume,
+                                                 instance=instance)
                 except Exception:
                     raise exception.InvalidBDMVolume(id=volume_id)
             elif snapshot_id is not None:
@@ -1318,7 +1323,7 @@ class API(base.Base):
     #NOTE(bcwaldon): this doesn't really belong in this class
     def get_instance_type(self, context, instance_type_id):
         """Get an instance type by instance type id."""
-        return instance_types.get_instance_type(instance_type_id)
+        return instance_types.get_instance_type(instance_type_id, ctxt=context)
 
     def get(self, context, instance_id):
         """Get a single instance with the given instance_id."""

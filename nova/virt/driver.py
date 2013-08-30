@@ -404,7 +404,8 @@ class ComputeDriver(object):
         """Power off the specified instance."""
         raise NotImplementedError()
 
-    def power_on(self, instance):
+    def power_on(self, context, instance, network_info,
+                 block_device_info=None):
         """Power on the specified instance."""
         raise NotImplementedError()
 
@@ -935,4 +936,4 @@ def load_compute_driver(virtapi, compute_driver=None):
 
 
 def compute_driver_matches(match):
-    return CONF.compute_driver.endswith(match)
+    return CONF.compute_driver and CONF.compute_driver.endswith(match)

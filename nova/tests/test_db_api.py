@@ -1306,18 +1306,36 @@ class AggregateDBApiTestCase(test.TestCase):
 
     def test_aggregate_get_by_host(self):
         ctxt = context.get_admin_context()
-        values = {'name': 'fake_aggregate2'}
+        values2 = {'name': 'fake_aggregate2'}
+        values3 = {'name': 'fake_aggregate3'}
+        values4 = {'name': 'fake_aggregate4'}
+        values5 = {'name': 'fake_aggregate5'}
         a1 = _create_aggregate_with_hosts(context=ctxt)
-        a2 = _create_aggregate_with_hosts(context=ctxt, values=values)
+        a2 = _create_aggregate_with_hosts(context=ctxt, values=values2)
+        # a3 has no hosts and should not be in the results.
+        a3 = _create_aggregate(context=ctxt, values=values3)
+        # a4 has no matching hosts.
+        a4 = _create_aggregate_with_hosts(context=ctxt, values=values4,
+                hosts=['foo4.openstack.org'])
+        # a5 has no matching hosts after deleting the only matching host.
+        a5 = _create_aggregate_with_hosts(context=ctxt, values=values5,
+                hosts=['foo5.openstack.org', 'foo.openstack.org'])
+        db.aggregate_host_delete(ctxt, a5['id'],
+                                 'foo.openstack.org')
         r1 = db.aggregate_get_by_host(ctxt, 'foo.openstack.org')
         self.assertEqual([a1['id'], a2['id']], [x['id'] for x in r1])
 
     def test_aggregate_get_by_host_with_key(self):
         ctxt = context.get_admin_context()
-        values = {'name': 'fake_aggregate2'}
+        values2 = {'name': 'fake_aggregate2'}
+        values3 = {'name': 'fake_aggregate3'}
+        values4 = {'name': 'fake_aggregate4'}
         a1 = _create_aggregate_with_hosts(context=ctxt,
                                           metadata={'goodkey': 'good'})
-        a2 = _create_aggregate_with_hosts(context=ctxt, values=values)
+        _create_aggregate_with_hosts(context=ctxt, values=values2)
+        _create_aggregate(context=ctxt, values=values3)
+        _create_aggregate_with_hosts(context=ctxt, values=values4,
+                hosts=['foo4.openstack.org'], metadata={'goodkey': 'bad'})
         # filter result by key
         r1 = db.aggregate_get_by_host(ctxt, 'foo.openstack.org', key='goodkey')
         self.assertEqual([a1['id']], [x['id'] for x in r1])
@@ -1336,16 +1354,22 @@ class AggregateDBApiTestCase(test.TestCase):
 
     def test_aggregate_metadata_get_by_host_with_key(self):
         ctxt = context.get_admin_context()
-        values = {'name': 'fake_aggregate2'}
-        values2 = {'name': 'fake_aggregate3'}
+        values2 = {'name': 'fake_aggregate12'}
+        values3 = {'name': 'fake_aggregate23'}
+        a2_hosts = ['foo1.openstack.org', 'foo2.openstack.org']
+        a2_metadata = {'good': 'value12', 'bad': 'badvalue12'}
+        a3_hosts = ['foo2.openstack.org', 'foo3.openstack.org']
+        a3_metadata = {'good': 'value23', 'bad': 'badvalue23'}
         a1 = _create_aggregate_with_hosts(context=ctxt)
-        a2 = _create_aggregate_with_hosts(context=ctxt, values=values)
-        a3 = _create_aggregate_with_hosts(context=ctxt, values=values2,
-                hosts=['foo.openstack.org'], metadata={'good': 'value'})
-        r1 = db.aggregate_metadata_get_by_host(ctxt, 'foo.openstack.org',
+        a2 = _create_aggregate_with_hosts(context=ctxt, values=values2,
+                hosts=a2_hosts, metadata=a2_metadata)
+        a3 = _create_aggregate_with_hosts(context=ctxt, values=values3,
+                hosts=a3_hosts, metadata=a3_metadata)
+        r1 = db.aggregate_metadata_get_by_host(ctxt, 'foo2.openstack.org',
                                                key='good')
-        self.assertEqual(r1['good'], set(['value']))
+        self.assertEqual(r1['good'], set(['value12', 'value23']))
         self.assertFalse('fake_key1' in r1)
+        self.assertFalse('bad' in r1)
         # Delete metadata
         db.aggregate_metadata_delete(ctxt, a3['id'], 'good')
         r2 = db.aggregate_metadata_get_by_host(ctxt, 'foo.openstack.org',
@@ -1354,14 +1378,23 @@ class AggregateDBApiTestCase(test.TestCase):
 
     def test_aggregate_host_get_by_metadata_key(self):
         ctxt = context.get_admin_context()
-        values = {'name': 'fake_aggregate2'}
-        values2 = {'name': 'fake_aggregate3'}
+        values2 = {'name': 'fake_aggregate12'}
+        values3 = {'name': 'fake_aggregate23'}
+        a2_hosts = ['foo1.openstack.org', 'foo2.openstack.org']
+        a2_metadata = {'good': 'value12', 'bad': 'badvalue12'}
+        a3_hosts = ['foo2.openstack.org', 'foo3.openstack.org']
+        a3_metadata = {'good': 'value23', 'bad': 'badvalue23'}
         a1 = _create_aggregate_with_hosts(context=ctxt)
-        a2 = _create_aggregate_with_hosts(context=ctxt, values=values)
-        a3 = _create_aggregate_with_hosts(context=ctxt, values=values2,
-                hosts=['foo.openstack.org'], metadata={'good': 'value'})
+        a2 = _create_aggregate_with_hosts(context=ctxt, values=values2,
+                hosts=a2_hosts, metadata=a2_metadata)
+        a3 = _create_aggregate_with_hosts(context=ctxt, values=values3,
+                hosts=a3_hosts, metadata=a3_metadata)
         r1 = db.aggregate_host_get_by_metadata_key(ctxt, key='good')
-        self.assertEqual(r1, {'foo.openstack.org': set(['value'])})
+        self.assertEqual({
+            'foo1.openstack.org': set(['value12']),
+            'foo2.openstack.org': set(['value12', 'value23']),
+            'foo3.openstack.org': set(['value23']),
+        }, r1)
         self.assertFalse('fake_key1' in r1)
 
     def test_aggregate_get_by_host_not_found(self):
@@ -2047,16 +2080,18 @@ class InstanceDestroyConstraints(test.TestCase):
 
 
 class VolumeUsageDBApiTestCase(test.TestCase):
+
     def setUp(self):
         super(VolumeUsageDBApiTestCase, self).setUp()
         self.user_id = 'fake'
         self.project_id = 'fake'
         self.context = context.RequestContext(self.user_id, self.project_id)
 
+        self.useFixture(test.TimeOverride())
+
     def test_vol_usage_update_no_totals_update(self):
         ctxt = context.get_admin_context()
         now = timeutils.utcnow()
-        timeutils.set_time_override(now)
         start_time = now - datetime.timedelta(seconds=10)
         refreshed_time = now - datetime.timedelta(seconds=5)
 
@@ -2064,12 +2099,20 @@ class VolumeUsageDBApiTestCase(test.TestCase):
                                 'curr_reads': 1000,
                                 'curr_read_bytes': 2000,
                                 'curr_writes': 3000,
-                                'curr_write_bytes': 4000},
+                                'curr_write_bytes': 4000,
+                                'tot_reads': 0,
+                                'tot_read_bytes': 0,
+                                'tot_writes': 0,
+                                'tot_write_bytes': 0},
                                {'volume_id': u'2',
                                 'curr_reads': 100,
                                 'curr_read_bytes': 200,
                                 'curr_writes': 300,
-                                'curr_write_bytes': 400}]
+                                'curr_write_bytes': 400,
+                                'tot_reads': 0,
+                                'tot_read_bytes': 0,
+                                'tot_writes': 0,
+                                'tot_write_bytes': 0}]
 
         def _compare(vol_usage, expected):
             for key, value in expected.items():
@@ -2092,13 +2135,41 @@ class VolumeUsageDBApiTestCase(test.TestCase):
         self.assertEqual(len(vol_usages), 2)
         _compare(vol_usages[0], expected_vol_usages[0])
         _compare(vol_usages[1], expected_vol_usages[1])
-        timeutils.clear_time_override()
 
     def test_vol_usage_update_totals_update(self):
         ctxt = context.get_admin_context()
         now = timeutils.utcnow()
-        timeutils.set_time_override(now)
         start_time = now - datetime.timedelta(seconds=10)
+
+        vol_usage = db.vol_usage_update(ctxt, 1, rd_req=100, rd_bytes=200,
+                                        wr_req=300, wr_bytes=400,
+                                        instance_id=1)
+        current_usage = db.vol_get_usage_by_time(ctxt, start_time)[0]
+        self.assertEqual(current_usage['tot_reads'], 0)
+        self.assertEqual(current_usage['curr_reads'], 100)
+
+        vol_usage = db.vol_usage_update(ctxt, 1, rd_req=200, rd_bytes=300,
+                                        wr_req=400, wr_bytes=500,
+                                        instance_id=1,
+                                        update_totals=True)
+        current_usage = db.vol_get_usage_by_time(ctxt, start_time)[0]
+        self.assertEqual(current_usage['tot_reads'], 200)
+        self.assertEqual(current_usage['curr_reads'], 0)
+
+        vol_usage = db.vol_usage_update(ctxt, 1, rd_req=300, rd_bytes=400,
+                                        wr_req=500, wr_bytes=600,
+                                        instance_id=1)
+        current_usage = db.vol_get_usage_by_time(ctxt, start_time)[0]
+        self.assertEqual(current_usage['tot_reads'], 200)
+        self.assertEqual(current_usage['curr_reads'], 300)
+
+        vol_usage = db.vol_usage_update(ctxt, 1, rd_req=400, rd_bytes=500,
+                                        wr_req=600, wr_bytes=700,
+                                        instance_id=1,
+                                        update_totals=True)
+
+        vol_usages = db.vol_get_usage_by_time(ctxt, start_time)
+
         expected_vol_usages = {'volume_id': u'1',
                                'tot_reads': 600,
                                'tot_read_bytes': 800,
@@ -2109,27 +2180,84 @@ class VolumeUsageDBApiTestCase(test.TestCase):
                                'curr_writes': 0,
                                'curr_write_bytes': 0}
 
-        vol_usage = db.vol_usage_update(ctxt, 1, rd_req=100, rd_bytes=200,
-                                        wr_req=300, wr_bytes=400,
-                                        instance_id=1)
-        vol_usage = db.vol_usage_update(ctxt, 1, rd_req=200, rd_bytes=300,
-                                        wr_req=400, wr_bytes=500,
-                                        instance_id=1,
-                                        update_totals=True)
-        vol_usage = db.vol_usage_update(ctxt, 1, rd_req=300, rd_bytes=400,
-                                        wr_req=500, wr_bytes=600,
-                                        instance_id=1)
-        vol_usage = db.vol_usage_update(ctxt, 1, rd_req=400, rd_bytes=500,
-                                        wr_req=600, wr_bytes=700,
-                                        instance_id=1,
-                                        update_totals=True)
-
-        vol_usages = db.vol_get_usage_by_time(ctxt, start_time)
-
         self.assertEquals(1, len(vol_usages))
         for key, value in expected_vol_usages.items():
             self.assertEqual(vol_usages[0][key], value)
-        timeutils.clear_time_override()
+
+    def test_vol_usage_update_when_blockdevicestats_reset(self):
+        ctxt = context.get_admin_context()
+        now = timeutils.utcnow()
+        start_time = now - datetime.timedelta(seconds=10)
+
+        vol_usages = db.vol_get_usage_by_time(ctxt, start_time)
+        self.assertEqual(len(vol_usages), 0)
+
+        db.vol_usage_update(ctxt, 1,
+                            rd_req=10000, rd_bytes=20000,
+                            wr_req=30000, wr_bytes=40000,
+                            instance_id=1)
+
+        # Instance rebooted or crashed. block device stats were reset and are
+        # less then the previous values
+        db.vol_usage_update(ctxt, 1,
+                            rd_req=100, rd_bytes=200,
+                            wr_req=300, wr_bytes=400,
+                            instance_id=1)
+
+        db.vol_usage_update(ctxt, 1,
+                            rd_req=200, rd_bytes=300,
+                            wr_req=400, wr_bytes=500,
+                            instance_id=1)
+
+        vol_usage = db.vol_get_usage_by_time(ctxt, start_time)[0]
+        expected_vol_usage = {'volume_id': u'1',
+                              'curr_reads': 200,
+                              'curr_read_bytes': 300,
+                              'curr_writes': 400,
+                              'curr_write_bytes': 500,
+                              'tot_reads': 10000,
+                              'tot_read_bytes': 20000,
+                              'tot_writes': 30000,
+                              'tot_write_bytes': 40000}
+        for key, value in expected_vol_usage.items():
+            self.assertEqual(vol_usage[key], value, key)
+
+    def test_vol_usage_update_totals_update_when_blockdevicestats_reset(self):
+        # This is unlikely to happen, but could when a volume is detached
+        # right after a instance has rebooted / recovered and before
+        # the system polled and updated the volume usage cache table.
+        ctxt = context.get_admin_context()
+        now = timeutils.utcnow()
+        start_time = now - datetime.timedelta(seconds=10)
+
+        vol_usages = db.vol_get_usage_by_time(ctxt, start_time)
+        self.assertEqual(len(vol_usages), 0)
+
+        db.vol_usage_update(ctxt, 1,
+                            rd_req=10000, rd_bytes=20000,
+                            wr_req=30000, wr_bytes=40000,
+                            instance_id=1)
+
+        # Instance rebooted or crashed. block device stats were reset and are
+        # less then the previous values
+        db.vol_usage_update(ctxt, 1,
+                            rd_req=100, rd_bytes=200,
+                            wr_req=300, wr_bytes=400,
+                            instance_id=1,
+                            update_totals=True)
+
+        vol_usage = db.vol_get_usage_by_time(ctxt, start_time)[0]
+        expected_vol_usage = {'volume_id': u'1',
+                              'curr_reads': 0,
+                              'curr_read_bytes': 0,
+                              'curr_writes': 0,
+                              'curr_write_bytes': 0,
+                              'tot_reads': 10100,
+                              'tot_read_bytes': 20200,
+                              'tot_writes': 30300,
+                              'tot_write_bytes': 40400}
+        for key, value in expected_vol_usage.items():
+            self.assertEqual(vol_usage[key], value, key)
 
 
 class TaskLogTestCase(test.TestCase):

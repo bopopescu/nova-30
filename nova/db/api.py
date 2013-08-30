@@ -727,22 +727,13 @@ def instance_info_cache_get(context, instance_uuid):
     return IMPL.instance_info_cache_get(context, instance_uuid)
 
 
-def instance_info_cache_update(context, instance_uuid, values,
-        update_cells=True):
+def instance_info_cache_update(context, instance_uuid, values):
     """Update an instance info cache record in the table.
 
     :param instance_uuid: = uuid of info cache's instance
     :param values: = dict containing column values to update
     """
-    rv = IMPL.instance_info_cache_update(context, instance_uuid, values)
-    if update_cells:
-        try:
-            cells_rpcapi.CellsAPI().instance_info_cache_update_at_top(
-                    context, rv)
-        except Exception:
-            LOG.exception(_("Failed to notify cells of instance info "
-                            "cache update"))
-    return rv
+    return IMPL.instance_info_cache_update(context, instance_uuid, values)
 
 
 def instance_info_cache_delete(context, instance_uuid):
@@ -1292,9 +1283,9 @@ def instance_type_get_by_name(context, name):
     return IMPL.instance_type_get_by_name(context, name)
 
 
-def instance_type_get_by_flavor_id(context, id):
+def instance_type_get_by_flavor_id(context, id, read_deleted=None):
     """Get instance type by flavor id."""
-    return IMPL.instance_type_get_by_flavor_id(context, id)
+    return IMPL.instance_type_get_by_flavor_id(context, id, read_deleted)
 
 
 def instance_type_destroy(context, name):

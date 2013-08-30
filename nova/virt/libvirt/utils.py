@@ -52,7 +52,11 @@ def get_iscsi_initiator():
     """Get iscsi initiator name for this machine."""
     # NOTE(vish) openiscsi stores initiator name in a file that
     #            needs root permission to read.
-    contents = utils.read_file_as_root('/etc/iscsi/initiatorname.iscsi')
+    try:
+        contents = utils.read_file_as_root('/etc/iscsi/initiatorname.iscsi')
+    except exception.FileNotFound:
+        return None
+
     for l in contents.split('\n'):
         if l.startswith('InitiatorName='):
             return l[l.index('=') + 1:].strip()
@@ -593,7 +597,7 @@ def fetch_image(context, target, image_id, user_id, project_id):
     images.fetch_to_raw(context, image_id, target, user_id, project_id)
 
 
-def get_instance_path(instance, forceold=False):
+def get_instance_path(instance, forceold=False, relative=False):
     """Determine the correct path for instance storage.
 
     This method determines the directory name for instance storage, while
@@ -602,10 +606,16 @@ def get_instance_path(instance, forceold=False):
 
     :param instance: the instance we want a path for
     :param forceold: force the use of the pre-grizzly format
+    :param relative: if True, just the relative path is returned
 
     :returns: a path to store information about that instance
     """
     pre_grizzly_name = os.path.join(CONF.instances_path, instance['name'])
     if forceold or os.path.exists(pre_grizzly_name):
+        if relative:
+            return instance['name']
         return pre_grizzly_name
+
+    if relative:
+        return instance['uuid']
     return os.path.join(CONF.instances_path, instance['uuid'])

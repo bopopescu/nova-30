@@ -31,6 +31,7 @@ from nova.network import model as network_model
 from nova.network import quantumv2
 from nova.network.security_group import openstack_driver
 from nova.openstack.common import excutils
+from nova.openstack.common import jsonutils
 from nova.openstack.common import log as logging
 from nova.openstack.common import uuidutils
 
@@ -182,6 +183,11 @@ class API(base.Base):
 
         nets = self._get_available_networks(context, instance['project_id'],
                                             net_ids)
+
+        if not nets:
+            LOG.warn(_("No network configured!"), instance=instance)
+            return []
+
         security_groups = kwargs.get('security_groups', [])
         security_group_ids = []
 
@@ -553,7 +559,7 @@ class API(base.Base):
 
     def get_all(self, context):
         client = quantumv2.get_client(context)
-        networks = client.list_networks().get('networks') or {}
+        networks = client.list_networks().get('networks')
         for network in networks:
             network['label'] = network['name']
         return networks
@@ -787,12 +793,18 @@ class API(base.Base):
         data = client.list_ports(**search_opts)
         ports = data.get('ports', [])
         if networks is None:
+            # retrieve networks from info_cache to get correct nic order
+            network_cache = self.conductor_api.instance_get_by_uuid(
+                context, instance['uuid'])['info_cache']['network_info']
+            network_cache = jsonutils.loads(network_cache)
+            net_ids = [iface['network']['id'] for iface in network_cache]
             networks = self._get_available_networks(context,
                                                     instance['project_id'])
 
         # ensure ports are in preferred network order, and filter out
         # those not attached to one of the provided list of networks
-        net_ids = [n['id'] for n in networks]
+        else:
+            net_ids = [n['id'] for n in networks]
         ports = [port for port in ports if port['network_id'] in net_ids]
         _ensure_requested_network_ordering(lambda x: x['network_id'],
                                            ports, net_ids)

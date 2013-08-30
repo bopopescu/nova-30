@@ -38,7 +38,6 @@ from nova import exception
 from nova.openstack.common import excutils
 from nova.openstack.common import log as logging
 from nova.virt import driver
-from nova.virt.vmwareapi import network_util
 from nova.virt.vmwareapi import vif as vmwarevif
 from nova.virt.vmwareapi import vim_util
 from nova.virt.vmwareapi import vm_util
@@ -134,9 +133,6 @@ class VMwareVMOps(object):
         4. Attach the disk to the VM by reconfiguring the same.
         5. Power on the VM.
         """
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref:
-            raise exception.InstanceExists(name=instance['name'])
 
         client_factory = self._session._get_vim().client.factory
         service_content = self._session._get_vim().get_service_content()
@@ -159,20 +155,16 @@ class VMwareVMOps(object):
                                                 "lsiLogic")
             disk_type = image_properties.get("vmware_disktype",
                                              "preallocated")
-            return vmdk_file_size_in_kb, os_type, adapter_type, disk_type
+            # Get the network card type from the image properties.
+            vif_model = image_properties.get("hw_vif_model", "VirtualE1000")
+            return (vmdk_file_size_in_kb, os_type, adapter_type, disk_type,
+                vif_model)
 
         (vmdk_file_size_in_kb, os_type, adapter_type,
-         disk_type) = _get_image_properties()
+            disk_type, vif_model) = _get_image_properties()
 
         vm_folder_ref = self._get_vmfolder_ref()
         res_pool_ref = self._get_res_pool_ref()
-
-        def _check_if_network_bridge_exists(network_name):
-            network_ref = network_util.get_network_with_the_name(
-                          self._session, network_name, self._cluster)
-            if network_ref is None:
-                raise exception.NetworkNotFoundForBridge(bridge=network_name)
-            return network_ref
 
         def _get_vif_infos():
             vif_infos = []
@@ -187,11 +179,14 @@ class VMwareVMOps(object):
                                                         self._session, vif,
                                                         self._cluster)
                 else:
-                    network_ref = _check_if_network_bridge_exists(network_name)
+                    # FlatDHCP network without vlan.
+                    network_ref = vmwarevif.ensure_vlan_bridge(
+                        self._session, vif, self._cluster, create_vlan=False)
                 vif_infos.append({'network_name': network_name,
                                   'mac_address': mac_address,
                                   'network_ref': network_ref,
-                                  'iface_id': vif.get_meta('iface_id'),
+                                  'vif_model': vif_model,
+                                  'iface_id': vif['id'],
                                  })
             return vif_infos
 
@@ -215,7 +210,7 @@ class VMwareVMOps(object):
             LOG.debug(_("Created VM on the ESX host"), instance=instance)
 
         _execute_create_vm()
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
 
         # Set the machine.id parameter of the instance to inject
         # the NIC configuration inside the VM
@@ -358,7 +353,7 @@ class VMwareVMOps(object):
                 upload_folder = self._instance_path_base
                 upload_name = instance['image_ref']
             else:
-                upload_folder = instance['name']
+                upload_folder = instance['uuid']
                 upload_name = instance['name']
 
             # The vmdk meta-data file
@@ -415,7 +410,7 @@ class VMwareVMOps(object):
             root_disk = driver.block_device_info_get_mapping(
                            block_device_info)[0]
             connection_info = root_disk['connection_info']
-            self._volumeops.attach_volume(connection_info, instance['name'],
+            self._volumeops.attach_volume(connection_info, instance['uuid'],
                                           self._default_root_device)
 
         def _power_on_vm():
@@ -444,10 +439,7 @@ class VMwareVMOps(object):
         4. Now upload the -flat.vmdk file to the image store.
         5. Delete the coalesced .vmdk and -flat.vmdk created.
         """
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
-
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
         client_factory = self._session._get_vim().client.factory
         service_content = self._session._get_vim().get_service_content()
 
@@ -477,7 +469,7 @@ class VMwareVMOps(object):
             snapshot_task = self._session._call_method(
                         self._session._get_vim(),
                         "CreateSnapshot_Task", vm_ref,
-                        name="%s-snapshot" % instance['name'],
+                        name="%s-snapshot" % instance['uuid'],
                         description="Taking Snapshot of the VM",
                         memory=False,
                         quiesce=True)
@@ -592,10 +584,7 @@ class VMwareVMOps(object):
 
     def reboot(self, instance, network_info):
         """Reboot a VM instance."""
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
-
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
         self.plug_vifs(instance, network_info)
 
         lst_properties = ["summary.guest.toolsStatus", "runtime.powerState",
@@ -642,14 +631,8 @@ class VMwareVMOps(object):
         2. Destroy the VM.
         """
         try:
-            vm_ref = vm_util.get_vm_ref_from_name(self._session,
-                                                  instance['name'])
-            if vm_ref is None:
-                LOG.debug(_("instance not present"), instance=instance)
-                return
-
+            vm_ref = vm_util.get_vm_ref(self._session, instance)
             self.power_off(instance)
-
             try:
                 LOG.debug(_("Destroying the VM"), instance=instance)
                 destroy_task = self._session._call_method(
@@ -674,11 +657,7 @@ class VMwareVMOps(object):
         3. Delete the contents of the folder holding the VM related data.
         """
         try:
-            vm_ref = vm_util.get_vm_ref_from_name(self._session,
-                                                  instance['name'])
-            if vm_ref is None:
-                LOG.debug(_("instance not present"), instance=instance)
-                return
+            vm_ref = vm_util.get_vm_ref(self._session, instance)
             lst_properties = ["config.files.vmPathName", "runtime.powerState"]
             props = self._session._call_method(vim_util,
                         "get_object_properties",
@@ -757,10 +736,7 @@ class VMwareVMOps(object):
 
     def suspend(self, instance):
         """Suspend the specified instance."""
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
-
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
         pwr_state = self._session._call_method(vim_util,
                     "get_dynamic_property", vm_ref,
                     "VirtualMachine", "runtime.powerState")
@@ -781,10 +757,7 @@ class VMwareVMOps(object):
 
     def resume(self, instance):
         """Resume the specified instance."""
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
-
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
         pwr_state = self._session._call_method(vim_util,
                                      "get_dynamic_property", vm_ref,
                                      "VirtualMachine", "runtime.powerState")
@@ -806,9 +779,7 @@ class VMwareVMOps(object):
             - spawn a rescue VM (the vm name-label will be instance-N-rescue).
 
         """
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
 
         self.power_off(instance)
         instance['name'] = instance['name'] + self._rescue_suffix
@@ -822,7 +793,10 @@ class VMwareVMOps(object):
             = vm_util.get_vmdk_path_and_adapter_type(hardware_devices)
         # Figure out the correct unit number
         unit_number = unit_number + 1
-        rescue_vm_ref = vm_util.get_vm_ref_from_name(self._session,
+        rescue_vm_ref = vm_util.get_vm_ref_from_uuid(self._session,
+                                                     instance['uuid'])
+        if rescue_vm_ref is None:
+            rescue_vm_ref = vm_util.get_vm_ref_from_name(self._session,
                                                      instance['name'])
         self._volumeops.attach_disk_to_vm(
                                 rescue_vm_ref, instance,
@@ -836,13 +810,11 @@ class VMwareVMOps(object):
         instance['name'] = instance['name'] + self._rescue_suffix
         self.destroy(instance, None)
         instance['name'] = instance_orig_name
-        self.power_on(instance)
+        self._power_on(instance)
 
     def power_off(self, instance):
         """Power off the specified instance."""
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
 
         pwr_state = self._session._call_method(vim_util,
                     "get_dynamic_property", vm_ref,
@@ -863,11 +835,9 @@ class VMwareVMOps(object):
             LOG.debug(_("VM was already in powered off state. So returning "
                         "without doing anything"), instance=instance)
 
-    def power_on(self, instance):
+    def _power_on(self, instance):
         """Power on the specified instance."""
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
 
         pwr_state = self._session._call_method(vim_util,
                                      "get_dynamic_property", vm_ref,
@@ -883,6 +853,9 @@ class VMwareVMOps(object):
                                         "PowerOnVM_Task", vm_ref)
             self._session._wait_for_task(instance['uuid'], poweron_task)
             LOG.debug(_("Powered on the VM"), instance=instance)
+
+    def power_on(self, context, instance, network_info, block_device_info):
+        self._power_on(instance)
 
     def _get_orig_vm_name_label(self, instance):
         return instance['name'] + '-orig'
@@ -915,9 +888,7 @@ class VMwareVMOps(object):
                                        step=0,
                                        total_steps=RESIZE_TOTAL_STEPS)
 
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['name'])
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
         host_ref = self._get_host_ref_from_name(dest)
         if host_ref is None:
             raise exception.HostNotFound(host=dest)
@@ -968,7 +939,9 @@ class VMwareVMOps(object):
         """Confirms a resize, destroying the source VM."""
         instance_name = self._get_orig_vm_name_label(instance)
         # Destroy the original VM.
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance_name)
+        vm_ref = vm_util.get_vm_ref_from_uuid(self._session, instance['uuid'])
+        if vm_ref is None:
+            vm_ref = vm_util.get_vm_ref_from_name(self._session, instance_name)
         if vm_ref is None:
             LOG.debug(_("instance not present"), instance=instance)
             return
@@ -987,8 +960,9 @@ class VMwareVMOps(object):
         if network_info:
             self.unplug_vifs(instance, network_info)
 
-    def finish_revert_migration(self, instance):
-        """Finish reverting a resize, powering back on the instance."""
+    def finish_revert_migration(self, instance, network_info,
+                                block_device_info, power_on=True):
+        """Finish reverting a resize."""
         # The original vm was suffixed with '-orig'; find it using
         # the old suffix, remove the suffix, then power it back on.
         name_label = self._get_orig_vm_name_label(instance)
@@ -1000,17 +974,20 @@ class VMwareVMOps(object):
                   instance=instance)
         rename_task = self._session._call_method(
                             self._session._get_vim(),
-                            "Rename_Task", vm_ref, newName=instance['name'])
+                            "Rename_Task", vm_ref, newName=instance['uuid'])
         self._session._wait_for_task(instance['uuid'], rename_task)
         LOG.debug(_("Renamed the VM from %s") % name_label,
                   instance=instance)
-        self.power_on(instance)
+        if power_on:
+            self._power_on(instance)
 
     def finish_migration(self, context, migration, instance, disk_info,
-                         network_info, image_meta, resize_instance=False):
+                         network_info, image_meta, resize_instance=False,
+                         block_device_info=None, power_on=True):
         """Completes a resize, turning on the migrated instance."""
         # 4. Start VM
-        self.power_on(instance)
+        if power_on:
+            self._power_on(instance)
         self._update_instance_progress(context, instance,
                                        step=4,
                                        total_steps=RESIZE_TOTAL_STEPS)
@@ -1018,9 +995,8 @@ class VMwareVMOps(object):
     def live_migration(self, context, instance_ref, dest,
                        post_method, recover_method, block_migration=False):
         """Spawning live_migration operation for distributing high-load."""
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance_ref.name)
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance_ref.name)
+        vm_ref = vm_util.get_vm_ref(self._session, instance_ref)
+
         host_ref = self._get_host_ref_from_name(dest)
         if host_ref is None:
             raise exception.HostNotFound(host=dest)
@@ -1056,9 +1032,7 @@ class VMwareVMOps(object):
 
     def get_info(self, instance):
         """Return data about the VM instance."""
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['name'])
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
 
         lst_properties = ["summary.config.numCpu",
                     "summary.config.memorySizeMB",
@@ -1092,10 +1066,9 @@ class VMwareVMOps(object):
 
     def get_console_output(self, instance):
         """Return snapshot of console."""
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
-        param_list = {"id": str(vm_ref)}
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
+
+        param_list = {"id": str(vm_ref.value)}
         base_url = "%s://%s/screen?%s" % (self._session._scheme,
                                          self._session._host_ip,
                                          urllib.urlencode(param_list))
@@ -1113,13 +1086,31 @@ class VMwareVMOps(object):
 
     def get_vnc_console(self, instance):
         """Return connection info for a vnc console."""
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
 
         return {'host': CONF.vmwareapi_host_ip,
                 'port': self._get_vnc_port(vm_ref),
                 'internal_access_path': None}
+
+    def get_vnc_console_vcenter(self, instance):
+        """Return connection info for a vnc console using vCenter logic."""
+
+        # vCenter does not run virtual machines and does not run
+        # a VNC proxy. Instead, you need to tell OpenStack to talk
+        # directly to the ESX host running the VM you are attempting
+        # to connect to via VNC.
+
+        vnc_console = self.get_vnc_console(instance)
+        host_name = vm_util.get_host_name_for_vm(
+                        self._session,
+                        instance)
+        vnc_console['host'] = host_name
+
+        # NOTE: VM can move hosts in some situations. Debug for admins.
+        LOG.debug(_("VM %(uuid)s is currently on host %(host_name)s"),
+                {'uuid': instance['name'], 'host_name': host_name})
+
+        return vnc_console
 
     @staticmethod
     def _get_vnc_port(vm_ref):
@@ -1161,9 +1152,7 @@ class VMwareVMOps(object):
         Set the machine id of the VM for guest tools to pick up and reconfigure
         the network interfaces.
         """
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
 
         machine_id_change_spec = vm_util.get_machine_id_change_spec(
                                  client_factory,
@@ -1182,9 +1171,7 @@ class VMwareVMOps(object):
         """
         Set the vnc configuration of the VM.
         """
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance['name'])
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance['uuid'])
+        vm_ref = vm_util.get_vm_ref(self._session, instance)
 
         vnc_config_spec = vm_util.get_vnc_config_spec(
                                       client_factory, port, password)
@@ -1329,28 +1316,3 @@ class VMwareVMOps(object):
     def unplug_vifs(self, instance, network_info):
         """Unplug VIFs from networks."""
         pass
-
-    def list_interfaces(self, instance_name):
-        """
-        Return the IDs of all the virtual network interfaces attached to the
-        specified instance, as a list.  These IDs are opaque to the caller
-        (they are only useful for giving back to this layer as a parameter to
-        interface_stats).  These IDs only need to be unique for a given
-        instance.
-        """
-        vm_ref = vm_util.get_vm_ref_from_name(self._session, instance_name)
-        if vm_ref is None:
-            raise exception.InstanceNotFound(instance_id=instance_name)
-
-        interfaces = []
-        # Get the virtual network interfaces attached to the VM
-        hardware_devices = self._session._call_method(vim_util,
-                    "get_dynamic_property", vm_ref,
-                    "VirtualMachine", "config.hardware.device")
-
-        for device in hardware_devices:
-            if device.__class__.__name__ in ["VirtualE1000", "VirtualE1000e",
-                "VirtualPCNet32", "VirtualVmxnet"]:
-                interfaces.append(device.key)
-
-        return interfaces

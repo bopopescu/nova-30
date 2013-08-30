@@ -19,6 +19,7 @@ Test suite for PowerVMDriver.
 """
 
 import contextlib
+import os
 
 from nova import context
 from nova import db
@@ -38,7 +39,7 @@ from nova.virt.powervm import common
 from nova.virt.powervm import driver as powervm_driver
 from nova.virt.powervm import exception
 from nova.virt.powervm import lpar
-from nova.virt.powervm import operator
+from nova.virt.powervm import operator as powervm_operator
 
 LOG = logging.getLogger(__name__)
 
@@ -50,7 +51,16 @@ def fake_lpar(instance_name):
                      uptime=939395, state='Running')
 
 
-class FakeIVMOperator(object):
+class FakePowerVMOperator(powervm_operator.PowerVMOperator):
+
+    def get_lpar(self, instance_name, resource_type='lpar'):
+        return fake_lpar(instance_name)
+
+    def run_vios_command(self, cmd):
+        pass
+
+
+class FakeIVMOperator(powervm_operator.IVMOperator):
 
     def get_lpar(self, instance_name, resource_type='lpar'):
         return fake_lpar(instance_name)
@@ -105,6 +115,9 @@ class FakeIVMOperator(object):
     def rename_lpar(self, old, new):
         pass
 
+    def _remove_file(self, file_path):
+        pass
+
     def set_lpar_mac_base_value(self, instance_name, mac):
         pass
 
@@ -152,7 +165,7 @@ class FakeBlockAdapter(powervm_blockdev.PowerVMLocalVolumeAdapter):
 
 
 def fake_get_powervm_operator():
-    return FakeIVMOperator()
+    return FakeIVMOperator(None)
 
 
 class PowerVMDriverTestCase(test.TestCase):
@@ -160,9 +173,9 @@ class PowerVMDriverTestCase(test.TestCase):
 
     def setUp(self):
         super(PowerVMDriverTestCase, self).setUp()
-        self.stubs.Set(operator, 'get_powervm_operator',
+        self.stubs.Set(powervm_operator, 'get_powervm_operator',
                        fake_get_powervm_operator)
-        self.stubs.Set(operator, 'get_powervm_disk_adapter',
+        self.stubs.Set(powervm_operator, 'get_powervm_disk_adapter',
                        lambda: FakeBlockAdapter())
         self.powervm_connection = powervm_driver.PowerVMDriver(None)
         self.instance = self._create_instance()
@@ -390,6 +403,37 @@ class PowerVMDriverTestCase(test.TestCase):
         expected_path = 'some/image/path/logical-vol-name_rsz.gz'
         self.assertEqual(file_path, expected_path)
 
+    def test_deploy_from_migrated_file(self):
+        instance = self.instance
+        context = 'fake_context'
+        network_info = []
+        network_info.append({'address': 'fa:89:f0:8b:9b:39'})
+        dest = '10.8.46.20'
+        disk_info = {}
+        disk_info['root_disk_file'] = 'some/file/path.gz'
+        disk_info['old_lv_size'] = 30
+        self.flags(powervm_mgr=dest)
+        fake_op = self.powervm_connection._powervm
+        self.deploy_from_vios_file_called = False
+
+        def fake_deploy_from_vios_file(lpar, file_path, size,
+                                       decompress):
+            exp_file_path = 'some/file/path.gz'
+            exp_size = 40 * 1024 ** 3
+            exp_decompress = True
+            self.deploy_from_vios_file_called = True
+            self.assertEqual(exp_file_path, file_path)
+            self.assertEqual(exp_size, size)
+            self.assertEqual(exp_decompress, decompress)
+
+        self.stubs.Set(fake_op, '_deploy_from_vios_file',
+                       fake_deploy_from_vios_file)
+        self.powervm_connection.finish_migration(context, None,
+                         instance, disk_info, network_info,
+                         None, resize_instance=True,
+                         block_device_info=None)
+        self.assertEqual(self.deploy_from_vios_file_called, True)
+
     def test_set_lpar_mac_base_value(self):
         instance = self.instance
         context = 'fake_context'
@@ -417,7 +461,7 @@ class PowerVMDriverTestCase(test.TestCase):
 
         def fake_set_lpar_mac_base_value(inst_name, mac, *args, **kwargs):
             # get expected mac address from FakeIVM set
-            fake_ivm = FakeIVMOperator()
+            fake_ivm = FakeIVMOperator(None)
             exp_mac = fake_ivm.macs_for_instance(inst_name).pop()
             self.assertEqual(exp_mac, mac)
 
@@ -513,3 +557,114 @@ class PowerVMDriverTestCase(test.TestCase):
         self.assertEquals(host_stats['supported_instances'][0][0], "ppc64")
         self.assertEquals(host_stats['supported_instances'][0][1], "powervm")
         self.assertEquals(host_stats['supported_instances'][0][2], "hvm")
+
+
+class PowerVMLocalVolumeAdapterTestCase(test.TestCase):
+    """
+    Unit tests for nova.virt.powervm.blockdev.PowerVMLocalVolumeAdapter.
+    """
+
+    def setUp(self):
+        super(PowerVMLocalVolumeAdapterTestCase, self).setUp()
+        self.connection = common.Connection(host='fake_compute_1',
+                                            username='fake_user',
+                                            password='fake_pass')
+        self.powervm_adapter = powervm_blockdev.PowerVMLocalVolumeAdapter(
+                                                            self.connection)
+
+    def test_copy_image_file_ftp_failed(self):
+        file_path = os.tempnam('/tmp', 'image')
+        remote_path = '/mnt/openstack/images'
+        exp_remote_path = os.path.join(remote_path,
+                                       os.path.basename(file_path))
+        exp_cmd = ' '.join(['/usr/bin/rm -f', exp_remote_path])
+
+        fake_noop = lambda *args, **kwargs: None
+        fake_op = self.powervm_adapter
+        self.stubs.Set(fake_op, 'run_vios_command', fake_noop)
+        self.stubs.Set(fake_op, '_checksum_local_file', fake_noop)
+
+        self.mox.StubOutWithMock(common, 'ftp_put_command')
+        self.mox.StubOutWithMock(self.powervm_adapter,
+                                 'run_vios_command_as_root')
+        msg_args = {'ftp_cmd': 'PUT',
+                    'source_path': file_path,
+                    'dest_path': remote_path}
+        exp_exception = exception.PowerVMFTPTransferFailed(**msg_args)
+
+        common.ftp_put_command(self.connection, file_path,
+                               remote_path).AndRaise(exp_exception)
+
+        self.powervm_adapter.run_vios_command_as_root(exp_cmd).AndReturn([])
+
+        self.mox.ReplayAll()
+
+        self.assertRaises(exception.PowerVMFTPTransferFailed,
+                          self.powervm_adapter._copy_image_file,
+                          file_path, remote_path)
+
+    def test_copy_image_file_wrong_checksum(self):
+        file_path = os.tempnam('/tmp', 'image')
+        remote_path = '/mnt/openstack/images'
+        exp_remote_path = os.path.join(remote_path,
+                                       os.path.basename(file_path))
+        exp_cmd = ' '.join(['/usr/bin/rm -f', exp_remote_path])
+
+        def fake_md5sum_remote_file(remote_path):
+            return '3202937169'
+
+        def fake_checksum_local_file(source_path):
+            return '3229026618'
+
+        fake_noop = lambda *args, **kwargs: None
+        fake_op = self.powervm_adapter
+        self.stubs.Set(fake_op, 'run_vios_command', fake_noop)
+        self.stubs.Set(fake_op, '_md5sum_remote_file',
+                       fake_md5sum_remote_file)
+        self.stubs.Set(fake_op, '_checksum_local_file',
+                       fake_checksum_local_file)
+        self.stubs.Set(common, 'ftp_put_command', fake_noop)
+
+        self.mox.StubOutWithMock(self.powervm_adapter,
+                                 'run_vios_command_as_root')
+        self.powervm_adapter.run_vios_command_as_root(exp_cmd).AndReturn([])
+
+        self.mox.ReplayAll()
+
+        self.assertRaises(exception.PowerVMFileTransferFailed,
+                          self.powervm_adapter._copy_image_file,
+                          file_path, remote_path)
+
+    def test_checksum_local_file(self):
+        file_path = os.tempnam('/tmp', 'image')
+        img_file = file(file_path, 'w')
+        img_file.write('This is a test')
+        img_file.close()
+        exp_md5sum = 'ce114e4501d2f4e2dcea3e17b546f339'
+
+        self.assertEqual(self.powervm_adapter._checksum_local_file(file_path),
+                         exp_md5sum)
+        os.remove(file_path)
+
+    def test_copy_image_file_from_host_with_wrong_checksum(self):
+        local_path = 'some/tmp'
+        remote_path = os.tempnam('/mnt/openstack/images', 'image')
+
+        def fake_md5sum_remote_file(remote_path):
+            return '3202937169'
+
+        def fake_checksum_local_file(source_path):
+            return '3229026618'
+
+        fake_noop = lambda *args, **kwargs: None
+        fake_op = self.powervm_adapter
+        self.stubs.Set(fake_op, 'run_vios_command_as_root', fake_noop)
+        self.stubs.Set(fake_op, '_md5sum_remote_file',
+                       fake_md5sum_remote_file)
+        self.stubs.Set(fake_op, '_checksum_local_file',
+                       fake_checksum_local_file)
+        self.stubs.Set(common, 'ftp_get_command', fake_noop)
+
+        self.assertRaises(exception.PowerVMFileTransferFailed,
+                          self.powervm_adapter._copy_image_file_from_host,
+                          remote_path, local_path)
