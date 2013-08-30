@@ -10,6 +10,7 @@ nova (2013.1.3-1) unstable; urgency=low
     - Portuguese, thanks to the Traduz team (Closes: #720315).
     - Czech, thanks to Michal Šimůnek (Closes: #721039).
     - Russian, thanks to Yuri Kozlov (Closes: #721259).
+  * Adds iproute to nova-common depends (Closes: #719138).
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 22 Aug 2013 12:10:46 +0200
 
