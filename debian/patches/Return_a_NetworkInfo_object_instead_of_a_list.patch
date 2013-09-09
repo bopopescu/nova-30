@@ -2,15 +2,15 @@ Description: Return a NetworkInfo object instead of a list
  This return a NetworkInfo object instead of a list when there are no
  configured networks available.
 Author: Mehdi Abaakouk <mehdi.abaakouk@enovance.com>
-Origin: upstream, https://review.openstack.org/#/c/45674/
+Origin: upstream, https://review.openstack.org/#/c/45673/
 Bug-Ubuntu: https://bugs.launchpad.com/+bug/1222781
 Date: Mon, 9 Sep 2013 12:16:49 +0000 (+0200)
 
-diff --git a/nova/network/neutronv2/api.py b/nova/network/neutronv2/api.py
-index 70e582a..99eb155 100644
---- a/nova/network/neutronv2/api.py
-+++ b/nova/network/neutronv2/api.py
-@@ -262,7 +262,7 @@ class API(base.Base):
+diff --git a/nova/network/quantumv2/api.py b/nova/network/quantumv2/api.py
+index 506c3b3..7e357cf 100644
+--- a/nova/network/quantumv2/api.py
++++ b/nova/network/quantumv2/api.py
+@@ -186,7 +186,7 @@ class API(base.Base):
  
          if not nets:
              LOG.warn(_("No network configured!"), instance=instance)
@@ -19,11 +19,11 @@ index 70e582a..99eb155 100644
  
          security_groups = kwargs.get('security_groups', [])
          security_group_ids = []
-diff --git a/nova/tests/network/test_neutronv2.py b/nova/tests/network/test_neutronv2.py
-index fda6045..efaabaa 100644
---- a/nova/tests/network/test_neutronv2.py
-+++ b/nova/tests/network/test_neutronv2.py
-@@ -677,9 +677,9 @@ class TestNeutronv2(TestNeutronv2Base):
+diff --git a/nova/tests/network/test_quantumv2.py b/nova/tests/network/test_quantumv2.py
+index 57ccfd8..1fbc55c 100644
+--- a/nova/tests/network/test_quantumv2.py
++++ b/nova/tests/network/test_quantumv2.py
+@@ -625,9 +625,9 @@ class TestQuantumv2(test.TestCase):
          self.moxed_client.list_networks(
              tenant_id=self.instance['project_id'],
              shared=False).AndReturn(
