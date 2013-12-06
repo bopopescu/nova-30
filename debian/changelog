@@ -1,3 +1,10 @@
+nova (2013.1.3-3) UNRELEASED; urgency=low
+
+  * Adds nova-spiceproxy as provides for the spicehtml5 package, to follow the
+    Ubuntu thing and stay compatible.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 06 Dec 2013 16:42:23 +0800
+
 nova (2013.1.3-2) unstable; urgency=low
 
   * Removes XCP support to allow Ocaml transition to testing until XCP is
