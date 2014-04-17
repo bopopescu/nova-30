@@ -1,7 +1,0 @@
-path-to-the-xenhost.conf-fixup.patch
-install-missing-files.patch
-#fix-ubuntu-tests.patch
-fix-docs-build-without-network.patch
-fix-libvirt-unit-tests_Enable-tox-use-of-site-packages-for-libvirt.patch
-CVE-2013-4278_Enforce-flavor-access-during-instance-boot.patch
-Return_a_NetworkInfo_object_instead_of_a_list.patch
