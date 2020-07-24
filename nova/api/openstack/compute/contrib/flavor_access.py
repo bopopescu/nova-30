@@ -45,7 +45,7 @@ class FlavorTemplate(xmlutil.TemplateBuilder):
         make_flavor(root)
         alias = Flavor_access.alias
         namespace = Flavor_access.namespace
-        return xmlutil.SlaveTemplate(root, 1, nsmap={alias: namespace})
+        return xmlutil.SubordinateTemplate(root, 1, nsmap={alias: namespace})
 
 
 class FlavorsTemplate(xmlutil.TemplateBuilder):
@@ -55,7 +55,7 @@ class FlavorsTemplate(xmlutil.TemplateBuilder):
         make_flavor(elem)
         alias = Flavor_access.alias
         namespace = Flavor_access.namespace
-        return xmlutil.SlaveTemplate(root, 1, nsmap={alias: namespace})
+        return xmlutil.SubordinateTemplate(root, 1, nsmap={alias: namespace})
 
 
 class FlavorAccessTemplate(xmlutil.TemplateBuilder):
@@ -64,7 +64,7 @@ class FlavorAccessTemplate(xmlutil.TemplateBuilder):
         elem = xmlutil.SubTemplateElement(root, 'access',
                                           selector='flavor_access')
         make_flavor_access(elem)
-        return xmlutil.MasterTemplate(root, 1)
+        return xmlutil.MainTemplate(root, 1)
 
 
 def _marshall_flavor_access(flavor_id):
@@ -134,7 +134,7 @@ class FlavorActionController(wsgi.Controller):
     def show(self, req, resp_obj, id):
         context = req.environ['nova.context']
         if authorize(context):
-            # Attach our slave template to the response object
+            # Attach our subordinate template to the response object
             resp_obj.attach(xml=FlavorTemplate())
             db_flavor = req.get_db_flavor(id)
 
@@ -144,7 +144,7 @@ class FlavorActionController(wsgi.Controller):
     def detail(self, req, resp_obj):
         context = req.environ['nova.context']
         if authorize(context):
-            # Attach our slave template to the response object
+            # Attach our subordinate template to the response object
             resp_obj.attach(xml=FlavorsTemplate())
 
             flavors = list(resp_obj.obj['flavors'])
@@ -156,7 +156,7 @@ class FlavorActionController(wsgi.Controller):
     def create(self, req, body, resp_obj):
         context = req.environ['nova.context']
         if authorize(context):
-            # Attach our slave template to the response object
+            # Attach our subordinate template to the response object
             resp_obj.attach(xml=FlavorTemplate())
 
             db_flavor = req.get_db_flavor(resp_obj.obj['flavor']['id'])

@@ -107,7 +107,7 @@ class ServerTemplate(xmlutil.TemplateBuilder):
     def construct(self):
         root = xmlutil.TemplateElement('server', selector='server')
         make_server(root, detailed=True)
-        return xmlutil.MasterTemplate(root, 1, nsmap=server_nsmap)
+        return xmlutil.MainTemplate(root, 1, nsmap=server_nsmap)
 
 
 class MinimalServersTemplate(xmlutil.TemplateBuilder):
@@ -116,7 +116,7 @@ class MinimalServersTemplate(xmlutil.TemplateBuilder):
         elem = xmlutil.SubTemplateElement(root, 'server', selector='servers')
         make_server(elem)
         xmlutil.make_links(root, 'servers_links')
-        return xmlutil.MasterTemplate(root, 1, nsmap=server_nsmap)
+        return xmlutil.MainTemplate(root, 1, nsmap=server_nsmap)
 
 
 class ServersTemplate(xmlutil.TemplateBuilder):
@@ -124,27 +124,27 @@ class ServersTemplate(xmlutil.TemplateBuilder):
         root = xmlutil.TemplateElement('servers')
         elem = xmlutil.SubTemplateElement(root, 'server', selector='servers')
         make_server(elem, detailed=True)
-        return xmlutil.MasterTemplate(root, 1, nsmap=server_nsmap)
+        return xmlutil.MainTemplate(root, 1, nsmap=server_nsmap)
 
 
 class ServerAdminPassTemplate(xmlutil.TemplateBuilder):
     def construct(self):
         root = xmlutil.TemplateElement('server')
         root.set('adminPass')
-        return xmlutil.SlaveTemplate(root, 1, nsmap=server_nsmap)
+        return xmlutil.SubordinateTemplate(root, 1, nsmap=server_nsmap)
 
 
 class ServerMultipleCreateTemplate(xmlutil.TemplateBuilder):
     def construct(self):
         root = xmlutil.TemplateElement('server')
         root.set('reservation_id')
-        return xmlutil.MasterTemplate(root, 1, nsmap=server_nsmap)
+        return xmlutil.MainTemplate(root, 1, nsmap=server_nsmap)
 
 
 def FullServerTemplate():
-    master = ServerTemplate()
-    master.attach(ServerAdminPassTemplate())
-    return master
+    main = ServerTemplate()
+    main.attach(ServerAdminPassTemplate())
+    return main
 
 
 class CommonDeserializer(wsgi.MetadataXMLDeserializer):
